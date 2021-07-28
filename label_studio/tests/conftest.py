@@ -22,8 +22,24 @@ from .utils import (
     redis_client_mock, make_project
 )
 
-
 boto3.set_stream_logger('botocore.credentials', logging.DEBUG)
+
+
+settings.SENTRY_RATE = 0
+settings.SENTRY_DSN = ''
+
+
+@pytest.fixture(scope="function", autouse=True)
+def disable_sentry():
+    settings.SENTRY_RATE = 0
+    settings.SENTRY_DSN = ''
+
+
+@pytest.fixture(scope="function", autouse=True)
+def enable_sentry():
+    settings.SENTRY_RATE = 0
+    # it's disabled key, but this is correct
+    settings.SENTRY_DSN = 'https://44f7a50de5ab425ca6bc406ef69b2122@o227124.ingest.sentry.io/5820521'
 
 
 @pytest.fixture(scope='function')
@@ -66,15 +82,19 @@ def s3_with_images(s3):
 
 @pytest.fixture(autouse=True)
 def s3_with_jsons(s3):
-    """
-    Bucket structure:
-    s3://pytest-s3-images/image1.jpg
-    s3://pytest-s3-images/subdir/image1.jpg
-    s3://pytest-s3-images/subdir/image2.jpg
-    """
     bucket_name = 'pytest-s3-jsons'
     s3.create_bucket(Bucket=bucket_name)
     s3.put_object(Bucket=bucket_name, Key='test.json', Body=json.dumps({'image_url': 'http://ggg.com/image.jpg'}))
+    yield s3
+
+
+@pytest.fixture(autouse=True)
+def s3_with_hypertext_s3_links(s3):
+    bucket_name = 'pytest-s3-jsons-hypertext'
+    s3.create_bucket(Bucket=bucket_name)
+    s3.put_object(Bucket=bucket_name, Key='test.json', Body=json.dumps({
+        'text': "<a href=\"s3://hypertext-bucket/file with /spaces and' / ' / quotes.jpg\"/>"
+    }))
     yield s3
 
 

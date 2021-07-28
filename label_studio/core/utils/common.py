@@ -19,6 +19,7 @@ import traceback as tb
 import drf_yasg.openapi as openapi
 import contextlib
 import label_studio
+import re
 
 from django.db import models, transaction
 from django.utils.module_loading import import_string
@@ -27,10 +28,13 @@ from django.core.validators import URLValidator
 from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.db.utils import OperationalError
-
+from django.db.models.signals import *
 from rest_framework.views import Response, exception_handler
 from rest_framework import status
 from rest_framework.exceptions import ErrorDetail
+from django_filters.rest_framework import DjangoFilterBackend
+from drf_yasg.inspectors import CoreAPICompatInspector, NotHandled
+from collections import defaultdict
 
 from base64 import b64encode
 from lockfile import LockFile
@@ -125,31 +129,6 @@ def create_hash():
     return h.hexdigest()[0:16]
 
 
-def pretty_date(t):
-    # check version is datetime
-    is_timestamp = True
-    if isinstance(t, datetime):
-        t = str(int(t.timestamp()))
-
-    # check if version is correct timestamp from string
-    else:
-        try:
-            int(t)
-        except (ValueError, TypeError):
-            is_timestamp = False
-        else:
-            if datetime.fromtimestamp(int(t)) < datetime(1990, 1, 1):
-                is_timestamp = False
-
-    # pretty format if timestamp else print version as is
-    if is_timestamp:
-        timestamp = int(t)
-        dt = datetime.fromtimestamp(timestamp)
-        return dt.strftime(f'%d %b %Y %H:%M:%S.{str(t)[-3:]}')
-    else:
-        return t
-
-
 def paginator(objects, request, default_page=1, default_size=50):
     """ Get from request page and page_size and return paginated objects
 
@@ -214,20 +193,6 @@ def string_is_url(url):
         return False
     else:
         return True
-
-
-def download_base64_uri(url, username, password):
-    try:
-        if username is not None and password is not None:
-            r = requests.get(url, auth=HTTPBasicAuth(username, password))
-        else:
-            r = requests.get(url)
-        r.raise_for_status()
-    except requests.exceptions.RequestException as e:
-        logger.error(f'Failed downloading {url}. Reason: {e}', exc_info=True)
-    else:
-        encoded_uri = b64encode(r.content).decode('utf-8')
-        return f'data:{r.headers["Content-Type"]};base64,{encoded_uri}'
 
 
 def safe_float(v, default=0):
@@ -311,7 +276,7 @@ def find_first_one_to_one_related_field_by_prefix(instance, prefix):
     for field in instance._meta.get_fields():
         if issubclass(type(field), models.fields.related.OneToOneRel):
             attr_name = field.get_accessor_name()
-            if attr_name.startswith(prefix) and hasattr(instance, attr_name):
+            if re.match(prefix, attr_name) and hasattr(instance, attr_name):
                 return getattr(instance, attr_name)
 
 
@@ -388,6 +353,9 @@ def current_version_is_outdated(latest_version):
 def check_for_the_latest_version(print_message):
     """ Check latest pypi version
     """
+    if not settings.LATEST_VERSION_CHECK:
+        return
+
     import label_studio
 
     # prevent excess checks by time intervals
@@ -430,7 +398,13 @@ def collect_versions(force=False):
     :return: dict with sub-dicts of version descriptions
     """
     import label_studio
-    if settings.VERSIONS and not force:
+    
+    # prevent excess checks by time intervals
+    current_time = time.time()
+    need_check = current_time - settings.VERSIONS_CHECK_TIME > 300
+    settings.VERSIONS_CHECK_TIME = current_time
+
+    if settings.VERSIONS and not force and not need_check:
         return settings.VERSIONS
 
     # main pypi package
@@ -443,7 +417,8 @@ def collect_versions(force=False):
             'current_version_is_outdated': label_studio.__current_version_is_outdated__
         },
         # backend full git info
-        'label-studio-os-backend': version.get_git_commit_info()
+        'label-studio-os-backend': version.get_git_commit_info(),
+        'release': label_studio.__version__
     }
 
     # label studio frontend
@@ -466,7 +441,14 @@ def collect_versions(force=False):
     try:
         import label_studio_converter
         result['label-studio-converter'] = {'version': label_studio_converter.__version__}
-    except:
+    except Exception as e:
+        pass
+
+    # ml
+    try:
+        import label_studio_ml
+        result['label-studio-ml'] = {'version': label_studio_ml.__version__}
+    except Exception as e:
         pass
 
     result.update(settings.COLLECT_VERSIONS(result=result))
@@ -474,6 +456,16 @@ def collect_versions(force=False):
     for key in result:
         if 'message' in result[key] and len(result[key]['message']) > 70:
             result[key]['message'] = result[key]['message'][0:70] + ' ...'
+
+    if settings.SENTRY_DSN:
+        import sentry_sdk
+        sentry_sdk.set_context("versions", copy.deepcopy(result))
+
+        for package in result:
+            if 'version' in result[package]:
+                sentry_sdk.set_tag('version-' + package, result[package]['version'])
+            if 'commit' in result[package]:
+                sentry_sdk.set_tag('commit-' + package, result[package]['commit'])
 
     settings.VERSIONS = result
     return result
@@ -521,7 +513,13 @@ get_object_with_check_and_log = load_func(settings.GET_OBJECT_WITH_CHECK_AND_LOG
 
 
 class temporary_disconnect_signal:
-    """ Temporarily disconnect a model from a signal """
+    """ Temporarily disconnect a model from a signal
+
+        Example:
+            with temporary_disconnect_all_signals(
+                signals.post_delete, update_is_labeled_after_removing_annotation, Annotation):
+                do_something()
+    """
     def __init__(self, signal, receiver, sender, dispatch_uid=None):
         self.signal = signal
         self.receiver = receiver
@@ -541,3 +539,49 @@ class temporary_disconnect_signal:
             sender=self.sender,
             dispatch_uid=self.dispatch_uid
         )
+
+
+class temporary_disconnect_all_signals(object):
+    def __init__(self, disabled_signals=None):
+        self.stashed_signals = defaultdict(list)
+        self.disabled_signals = disabled_signals or [
+            pre_init, post_init,
+            pre_save, post_save,
+            pre_delete, post_delete,
+            pre_migrate, post_migrate,
+        ]
+
+    def __enter__(self):
+        for signal in self.disabled_signals:
+            self.disconnect(signal)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        for signal in list(self.stashed_signals):
+            self.reconnect(signal)
+
+    def disconnect(self, signal):
+        self.stashed_signals[signal] = signal.receivers
+        signal.receivers = []
+
+    def reconnect(self, signal):
+        signal.receivers = self.stashed_signals.get(signal, [])
+        del self.stashed_signals[signal]
+
+
+class DjangoFilterDescriptionInspector(CoreAPICompatInspector):
+    def get_filter_parameters(self, filter_backend):
+        if isinstance(filter_backend, DjangoFilterBackend):
+            result = super(DjangoFilterDescriptionInspector, self).get_filter_parameters(filter_backend)
+            for param in result:
+                if not param.get('description', ''):
+                    param.description = "Filter the returned list by {field_name}".format(field_name=param.name)
+
+            return result
+
+        return NotHandled
+
+
+def batch(iterable, n=1):
+    l = len(iterable)
+    for ndx in range(0, l, n):
+        yield iterable[ndx : min(ndx + n, l)]
