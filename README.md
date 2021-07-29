@@ -26,7 +26,7 @@ By default `HASHBIN_DIR` will also be mounted in the container.
 
 ![GitHub](https://img.shields.io/github/license/heartexlabs/label-studio?logo=heartex) ![label-studio:build](https://github.com/heartexlabs/label-studio/workflows/label-studio:build/badge.svg) ![GitHub release](https://img.shields.io/github/v/release/heartexlabs/label-studio?include_prereleases)
 
-[Website](https://labelstud.io/) • [Docs](https://labelstud.io/guide/) • [Twitter](https://twitter.com/heartexlabs) • [Join Slack Community <img src="https://app.heartex.ai/docs/images/slack-mini.png" width="18px"/>](https://join.slack.com/t/label-studio/shared_invite/zt-qy37y73p-CCfEaEZvDylyQf4oatK40A)
+[Website](https://labelstud.io/) • [Docs](https://labelstud.io/guide/) • [Twitter](https://twitter.com/heartexlabs) • [Join Slack Community <img src="https://app.heartex.ai/docs/images/slack-mini.png" width="18px"/>](http://slack.labelstud.io.s3-website-us-east-1.amazonaws.com?source=github-1)
 
 
 ## What is Label Studio?
@@ -150,10 +150,10 @@ You can deploy Label Studio with one click in Heroku, Microsoft Azure, or Google
 The frontend part of Label Studio app lies in the `frontend/` folder and written in React JSX. In case you've made some changes there, the following commands should be run before building / starting the instance:
 
 ```
-cd frontend/
+cd label_studio/frontend/
 npm ci
 npx webpack
-cd ..
+cd ../..
 python label_studio/manage.py collectstatic --no-input
 ```
 

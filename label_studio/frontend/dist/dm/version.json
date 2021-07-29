@@ -1,6 +1,6 @@
 {
-  "message": "Remove \"Skip\" button from a QuickView",
-  "commit": "64de04d29e17a86c5130f09186d9c21bfcb47255",
+  "message": "Don't close QuickView by Enter",
+  "commit": "d12a691d1e941768c3067ccb15abe5498f8a453b",
   "branch": "master",
-  "date": "2021-05-28T17:40:26Z"
+  "date": "2021-06-30T16:06:22Z"
 }
